@@ -31,7 +31,7 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-
+#define M_PI		3.14159265358979323846
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -67,19 +67,25 @@ typedef struct _motorCtrlObj {
 	float incDeg;
 	float incDeg_prev;
 	float incVel;
-	float desired_angle;
+
+	float reference;
+	float actual;
 	float Kp;
 	float Ki;
 	float Kd;
 	float err;
-	float err_f;
+	float err_diff_raw;
+	float err_diff_filt;
 	float err_sum;
+
+	float control_input;
 
 	motorDir motor_direction;
 
 } motorCtrlObj;
 
 motorCtrlObj motorObj;
+
 
 /* USER CODE END PV */
 
@@ -93,6 +99,25 @@ static void MX_TIM3_Init(void);
 static void MX_TIM2_Init(void);
 /* USER CODE BEGIN PFP */
 
+void Run_PID_Control(motorCtrlObj* t_motor_obj, float t_ref, float t_actual, float t_period)
+{
+	float t_err = 0;
+
+	t_motor_obj->reference = t_ref;
+	t_motor_obj->actual = t_actual;
+
+	t_err = t_ref - t_actual;
+
+	t_motor_obj->err_sum += t_err * t_period;
+	t_motor_obj->err_diff_raw = (t_err - t_motor_obj->err) / t_period;
+
+	t_motor_obj->err_diff_filt = 0.97 * t_motor_obj->err_diff_filt + 0.03 * t_motor_obj->err_diff_raw;
+
+	t_motor_obj->err = t_err;
+	t_motor_obj->control_input = t_motor_obj->Kp * t_motor_obj->err 		\
+								+ t_motor_obj->Ki * t_motor_obj->err_sum 	\
+								+ t_motor_obj->Kd * t_motor_obj->err_diff_raw;
+}
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -135,6 +160,7 @@ int main(void)
   MX_TIM2_Init();
   /* USER CODE BEGIN 2 */
 
+  HAL_TIM_Base_Start_IT(&htim2);
   HAL_TIM_Base_Start_IT(&htim3);
   HAL_ADC_Start_IT(&hadc1);		// Continuous Conversion Mode
 
@@ -559,28 +585,27 @@ static void MX_GPIO_Init(void)
 /* USER CODE BEGIN 4 */
 void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc)
 {
-	if (hadc == &hadc1){
-		adcVal = HAL_ADC_GetValue(&hadc1);
-
-		if (motorObj.motorCtrl == 0){
-			m_duty = adcVal*2048/4096;
-
-			if (motorObj.motor_direction == CCW) {
-				HAL_GPIO_WritePin(GPIOA, GPIO_PIN_0, GPIO_PIN_SET);
-				HAL_GPIO_WritePin(GPIOC, GPIO_PIN_1, GPIO_PIN_RESET);
-			}
-			else if (motorObj.motor_direction == CW) {
-				HAL_GPIO_WritePin(GPIOA, GPIO_PIN_0, GPIO_PIN_RESET);
-				HAL_GPIO_WritePin(GPIOC, GPIO_PIN_1, GPIO_PIN_SET);
-			}
-
-			htim1.Instance->CCR1 = m_duty;
-			HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
-
-			motorObj.motorCtrl = 1;
-		}
-
-	}
+//	if (hadc == &hadc1){
+//		adcVal = HAL_ADC_GetValue(&hadc1);
+//
+//		if (motorObj.motorCtrl == 0){
+//			m_duty = adcVal*2048/4096;
+//
+//			if (motorObj.motor_direction == CCW) {
+//				HAL_GPIO_WritePin(GPIOA, GPIO_PIN_0, GPIO_PIN_SET);
+//				HAL_GPIO_WritePin(GPIOC, GPIO_PIN_1, GPIO_PIN_RESET);
+//			}
+//			else if (motorObj.motor_direction == CW) {
+//				HAL_GPIO_WritePin(GPIOA, GPIO_PIN_0, GPIO_PIN_RESET);
+//				HAL_GPIO_WritePin(GPIOC, GPIO_PIN_1, GPIO_PIN_SET);
+//			}
+//
+//			htim1.Instance->CCR1 = m_duty;
+//			HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
+//
+//			motorObj.motorCtrl = 1;
+//		}
+//	}
 }
 
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_PIN)
@@ -611,30 +636,38 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_PIN)
 		HAL_UART_Transmit(&hlpuart1, (uint8_t *)uartData, strlen(uartData), 100);
 
 		// Motor Direction Change //
-		if (motorObj.motor_direction == CCW) {
-			motorObj.motor_direction = CW;
+//		if (motorObj.motor_direction == CCW) {
+//			motorObj.motor_direction = CW;
+//		}
+//		else if(motorObj.motor_direction == CW) {
+//			motorObj.motor_direction = CCW;
+//		}
+//		motorObj.motorCtrl = 0;
+
+		/* For Motor Control */
+		if (motorObj.motorCtrl == 0){
+			motorObj.motorCtrl = 1;
 		}
-		else if(motorObj.motor_direction == CW) {
-			motorObj.motor_direction = CCW;
+		else if (motorObj.motorCtrl == 1){
+			motorObj.motorCtrl = 0;
 		}
-		motorObj.motorCtrl = 0;
 	}
 
 	// Motor Encoder //
-	else if (GPIO_PIN == GPIO_PIN_2){	// phase A
+	else if (GPIO_PIN == GPIO_PIN_2) {	// phase A
 		if (HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_2) != HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_3)){
 			motorObj.incCnt++;
 		}
-		else{
+		else {
 			motorObj.incCnt--;
 		}
 	}
 
-	else if (GPIO_PIN == GPIO_PIN_3){	// phase B
+	else if (GPIO_PIN == GPIO_PIN_3) {	// phase B
 		if (HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_2) == HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_3)){
 			motorObj.incCnt++;
 		}
-		else{
+		else {
 			motorObj.incCnt--;
 		}
 	}
@@ -644,15 +677,85 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
 	/* Get Encoder Data */
 	if (htim == &htim3){
-		motorObj.incDeg = (float)motorObj.incCnt / 1376.0 * 360;
-		motorObj.incVel = 0.97*(motorObj.incVel) + 0.03*((motorObj.incDeg - motorObj.incDeg_prev)/1000);
+		motorObj.incDeg = (float)motorObj.incCnt / 1376.0 * 2 * M_PI;
+		motorObj.incVel = (motorObj.incDeg - motorObj.incDeg_prev)/0.001;
 		motorObj.incDeg_prev = motorObj.incDeg;
+
+		/* For Test */
+//		HAL_GPIO_WritePin(GPIOA, GPIO_PIN_0, GPIO_PIN_SET);
+//		HAL_GPIO_WritePin(GPIOC, GPIO_PIN_1, GPIO_PIN_RESET);
+//		htim1.Instance->CCR1 = 1200;
+//		HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
 	}
 
-
 	/* Control the Motor */
+	if (htim == &htim2){
+		if (motorObj.motorCtrl == 1) {
+
+			/* Position Control */
+////			motorObj.Kp = 500;
+////			motorObj.Ki = 0;
+////			motorObj.Kd = 10;
+////
+////			float deg_ref = 270 * M_PI / 360.0;
+////
+////			Run_PID_Control(&motorObj, deg_ref, motorObj.incDeg, 0.001);
+////
+////			if (motorObj.control_input >= 0){
+////				motorObj.motor_direction = CCW;
+////				HAL_GPIO_WritePin(GPIOA, GPIO_PIN_0, GPIO_PIN_SET);
+////				HAL_GPIO_WritePin(GPIOC, GPIO_PIN_1, GPIO_PIN_RESET);
+////			}
+////			if (motorObj.control_input < 0){
+////				motorObj.motor_direction = CW;
+////				HAL_GPIO_WritePin(GPIOA, GPIO_PIN_0, GPIO_PIN_RESET);
+////				HAL_GPIO_WritePin(GPIOC, GPIO_PIN_1, GPIO_PIN_SET);
+////			}
+			///////////////////////////////////////////////////////////////////////////
 
 
+			/* Velocity Control */
+			motorObj.Kp = 80;
+			motorObj.Ki = 0;
+			motorObj.Kd = 0;
+
+			float vel_ref = 350;
+
+			Run_PID_Control(&motorObj, vel_ref, motorObj.incVel, 0.001);
+
+			if (motorObj.control_input >= 0){
+				motorObj.motor_direction = CCW;
+				HAL_GPIO_WritePin(GPIOA, GPIO_PIN_0, GPIO_PIN_SET);
+				HAL_GPIO_WritePin(GPIOC, GPIO_PIN_1, GPIO_PIN_RESET);
+			}
+			if (motorObj.control_input < 0){
+				motorObj.motor_direction = CW;
+				HAL_GPIO_WritePin(GPIOA, GPIO_PIN_0, GPIO_PIN_RESET);
+				HAL_GPIO_WritePin(GPIOC, GPIO_PIN_1, GPIO_PIN_SET);
+			}
+			////////////////////////////////////////////////////////////////////////////
+
+
+
+			/* Saturation */
+			if (motorObj.control_input < 0){
+				motorObj.control_input = (-1) * motorObj.control_input;
+			}
+			if (motorObj.control_input > 2000){
+				motorObj.control_input = 2000;
+			}
+			/////////////////////////////////////////////////////////////////
+
+			htim1.Instance->CCR1 = motorObj.control_input;
+			HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
+		}
+
+		else if (motorObj.motorCtrl == 0) {
+			memset(&motorObj, 0, sizeof(motorObj));
+			htim1.Instance->CCR1 = 0;
+			HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_1);
+		}
+	}
 }
 
 /* USER CODE END 4 */

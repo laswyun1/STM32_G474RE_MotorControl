@@ -46,6 +46,7 @@ UART_HandleTypeDef hlpuart1;
 
 TIM_HandleTypeDef htim1;
 TIM_HandleTypeDef htim2;
+TIM_HandleTypeDef htim3;
 
 /* USER CODE BEGIN PV */
 
@@ -53,9 +54,32 @@ int InputVal = 0;
 int m_duty = 0;
 uint8_t flag = 1;
 int adcVal = 0;
-uint8_t direction = 0;	// 0 : CCW, 1 : CW
-uint8_t motorCtrl = 0;
-int incCnt = 0;
+
+typedef enum _motorDir {
+	CCW,
+	CW
+} motorDir;
+
+typedef struct _motorCtrlObj {
+	uint8_t motorCtrl;		// Button Update (Direction & Duty change)
+	int incCnt;
+
+	float incDeg;
+	float incDeg_prev;
+	float incVel;
+	float desired_angle;
+	float Kp;
+	float Ki;
+	float Kd;
+	float err;
+	float err_f;
+	float err_sum;
+
+	motorDir motor_direction;
+
+} motorCtrlObj;
+
+motorCtrlObj motorObj;
 
 /* USER CODE END PV */
 
@@ -64,8 +88,9 @@ void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_LPUART1_UART_Init(void);
 static void MX_ADC1_Init(void);
-static void MX_TIM2_Init(void);
 static void MX_TIM1_Init(void);
+static void MX_TIM3_Init(void);
+static void MX_TIM2_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -105,11 +130,12 @@ int main(void)
   MX_GPIO_Init();
   MX_LPUART1_UART_Init();
   MX_ADC1_Init();
-  MX_TIM2_Init();
   MX_TIM1_Init();
+  MX_TIM3_Init();
+  MX_TIM2_Init();
   /* USER CODE BEGIN 2 */
 
-  HAL_TIM_Base_Start_IT(&htim2);
+  HAL_TIM_Base_Start_IT(&htim3);
   HAL_ADC_Start_IT(&hadc1);		// Continuous Conversion Mode
 
 //  HAL_TIM_PWM_Start_IT(&htim1, TIM_CHANNEL_1);
@@ -423,6 +449,51 @@ static void MX_TIM2_Init(void)
 }
 
 /**
+  * @brief TIM3 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM3_Init(void)
+{
+
+  /* USER CODE BEGIN TIM3_Init 0 */
+
+  /* USER CODE END TIM3_Init 0 */
+
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+
+  /* USER CODE BEGIN TIM3_Init 1 */
+
+  /* USER CODE END TIM3_Init 1 */
+  htim3.Instance = TIM3;
+  htim3.Init.Prescaler = 170-1;
+  htim3.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim3.Init.Period = 999;
+  htim3.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim3.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim3, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim3, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM3_Init 2 */
+
+  /* USER CODE END TIM3_Init 2 */
+
+}
+
+/**
   * @brief GPIO Initialization Function
   * @param None
   * @retval None
@@ -491,14 +562,14 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc)
 	if (hadc == &hadc1){
 		adcVal = HAL_ADC_GetValue(&hadc1);
 
-		if (motorCtrl == 0){
+		if (motorObj.motorCtrl == 0){
 			m_duty = adcVal*2048/4096;
 
-			if (direction == 0){
+			if (motorObj.motor_direction == CCW) {
 				HAL_GPIO_WritePin(GPIOA, GPIO_PIN_0, GPIO_PIN_SET);
 				HAL_GPIO_WritePin(GPIOC, GPIO_PIN_1, GPIO_PIN_RESET);
 			}
-			else{
+			else if (motorObj.motor_direction == CW) {
 				HAL_GPIO_WritePin(GPIOA, GPIO_PIN_0, GPIO_PIN_RESET);
 				HAL_GPIO_WritePin(GPIOC, GPIO_PIN_1, GPIO_PIN_SET);
 			}
@@ -506,7 +577,7 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc)
 			htim1.Instance->CCR1 = m_duty;
 			HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
 
-			motorCtrl = 1;
+			motorObj.motorCtrl = 1;
 		}
 
 	}
@@ -540,40 +611,48 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_PIN)
 		HAL_UART_Transmit(&hlpuart1, (uint8_t *)uartData, strlen(uartData), 100);
 
 		// Motor Direction Change //
-		if (direction == 0){
-			direction = 1;
+		if (motorObj.motor_direction == CCW) {
+			motorObj.motor_direction = CW;
 		}
-		else{
-			direction = 0;
+		else if(motorObj.motor_direction == CW) {
+			motorObj.motor_direction = CCW;
 		}
-		motorCtrl = 0;
+		motorObj.motorCtrl = 0;
 	}
 
 	// Motor Encoder //
 	else if (GPIO_PIN == GPIO_PIN_2){	// phase A
 		if (HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_2) != HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_3)){
-			incCnt++;
+			motorObj.incCnt++;
 		}
 		else{
-			incCnt--;
+			motorObj.incCnt--;
 		}
 	}
 
 	else if (GPIO_PIN == GPIO_PIN_3){	// phase B
 		if (HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_2) == HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_3)){
-			incCnt++;
+			motorObj.incCnt++;
 		}
 		else{
-			incCnt--;
+			motorObj.incCnt--;
 		}
 	}
 }
 
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
-	if (htim == &htim2){
-		HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_5);
+	/* Get Encoder Data */
+	if (htim == &htim3){
+		motorObj.incDeg = (float)motorObj.incCnt / 1376.0 * 360;
+		motorObj.incVel = 0.97*(motorObj.incVel) + 0.03*((motorObj.incDeg - motorObj.incDeg_prev)/1000);
+		motorObj.incDeg_prev = motorObj.incDeg;
 	}
+
+
+	/* Control the Motor */
+
+
 }
 
 /* USER CODE END 4 */
